@@ -56,7 +56,13 @@ elif "country_code" in df.columns:
 else:
     raise ValueError("No country column found.")
 
-spain = df[df[country_col].isin(["ES", "Spain"])].copy()
+df[country_col] = df[country_col].astype(str).str.strip()
+
+spain = df[
+    df[country_col].isin(["ES", "Spain", "España", "ESP"])
+].copy()
+
+print("Spain rows:", len(spain))
 spain = spain.sort_values("date")
 
 # ------------------------------------------------------------
@@ -400,4 +406,4 @@ app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server
 
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    app.run(debug=True)
