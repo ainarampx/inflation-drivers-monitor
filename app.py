@@ -26,10 +26,17 @@ df.columns = df.columns.str.strip()
 if "date" in df.columns:
     df["date"] = pd.to_datetime(df["date"])
 elif {"year", "quarter"}.issubset(df.columns):
-    df["quarter"] = df["quarter"].astype(str).str.replace("Q", "", regex=False).astype(int)
+    df["quarter"] = (
+        df["quarter"]
+        .astype(str)
+        .str.replace("Q", "", regex=False)
+        .str.strip()
+    )
+
+    df["period_str"] = df["year"].astype(int).astype(str) + "Q" + df["quarter"]
+
     df["date"] = pd.PeriodIndex(
-        year=df["year"].astype(int),
-        quarter=df["quarter"],
+        df["period_str"],
         freq="Q"
     ).to_timestamp()
 elif "period" in df.columns:
