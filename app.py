@@ -1,438 +1,396 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "a00a6f8c",
-   "metadata": {},
-   "outputs": [
-    {
-     "name": "stdout",
-     "output_type": "stream",
-     "text": [
-      "Dash app running on http://127.0.0.1:8052/\n"
-     ]
-    }
-   ],
-   "source": [
-    "import pandas as pd\n",
-    "import statsmodels.api as sm\n",
-    "import plotly.graph_objects as go\n",
-    "import os \n",
-    "\n",
-    "from dash import Dash, html, dcc, dash_table, Input, Output\n",
-    "import dash_bootstrap_components as dbc\n",
-    "\n",
-    "# ------------------------------------------------------------\n",
-    "# Style\n",
-    "# ------------------------------------------------------------\n",
-    "CREAM = \"#F6F1E8\"\n",
-    "GREEN = \"#95AD88\"\n",
-    "DARK = \"#2B2B2B\"\n",
-    "BEIGE = \"#E8DDCF\"\n",
-    "LIGHT = \"#FBF8F1\"\n",
-    "\n",
-    "# ------------------------------------------------------------\n",
-    "# Load data\n",
-    "# ------------------------------------------------------------\n",
-    "df = pd.read_csv(\"base_definitive_es_fr.csv\")\n",
-    "df.columns = df.columns.str.strip()\n",
-    "\n",
-    "# Create date variable\n",
-    "if \"date\" in df.columns:\n",
-    "    df[\"date\"] = pd.to_datetime(df[\"date\"])\n",
-    "elif {\"year\", \"quarter\"}.issubset(df.columns):\n",
-    "    df[\"quarter\"] = df[\"quarter\"].astype(str).str.replace(\"Q\", \"\", regex=False).astype(int)\n",
-    "    df[\"date\"] = pd.PeriodIndex(\n",
-    "        year=df[\"year\"].astype(int),\n",
-    "        quarter=df[\"quarter\"],\n",
-    "        freq=\"Q\"\n",
-    "    ).to_timestamp()\n",
-    "elif \"period\" in df.columns:\n",
-    "    df[\"date\"] = pd.PeriodIndex(df[\"period\"].astype(str), freq=\"Q\").to_timestamp()\n",
-    "elif \"TIME_PERIOD\" in df.columns:\n",
-    "    df[\"date\"] = pd.PeriodIndex(df[\"TIME_PERIOD\"].astype(str), freq=\"Q\").to_timestamp()\n",
-    "else:\n",
-    "    raise ValueError(\"No date variable found. Please check your column names.\")\n",
-    "\n",
-    "# Identify country column\n",
-    "if \"country\" in df.columns:\n",
-    "    country_col = \"country\"\n",
-    "elif \"geo\" in df.columns:\n",
-    "    country_col = \"geo\"\n",
-    "elif \"country_code\" in df.columns:\n",
-    "    country_col = \"country_code\"\n",
-    "else:\n",
-    "    raise ValueError(\"No country column found.\")\n",
-    "\n",
-    "spain = df[df[country_col].isin([\"ES\", \"Spain\"])].copy()\n",
-    "spain = spain.sort_values(\"date\")\n",
-    "\n",
-    "# ------------------------------------------------------------\n",
-    "# Model variables\n",
-    "# ------------------------------------------------------------\n",
-    "spain[\"inflation_lag1\"] = spain[\"inflation_total\"].shift(1)\n",
-    "spain[\"d_profit_share\"] = spain[\"profit_share\"].diff()\n",
-    "\n",
-    "model_data = spain.dropna(subset=[\n",
-    "    \"inflation_total\",\n",
-    "    \"inflation_lag1\",\n",
-    "    \"inflation_energy\",\n",
-    "    \"ulc_yoy\",\n",
-    "    \"d_profit_share\",\n",
-    "    \"gdp_yoy\"\n",
-    "]).copy()\n",
-    "\n",
-    "X = model_data[[\n",
-    "    \"inflation_lag1\",\n",
-    "    \"inflation_energy\",\n",
-    "    \"ulc_yoy\",\n",
-    "    \"d_profit_share\",\n",
-    "    \"gdp_yoy\"\n",
-    "]]\n",
-    "\n",
-    "X = sm.add_constant(X)\n",
-    "y = model_data[\"inflation_total\"]\n",
-    "\n",
-    "model = sm.OLS(y, X).fit(cov_type=\"HAC\", cov_kwds={\"maxlags\": 4})\n",
-    "model_data[\"fitted\"] = model.fittedvalues\n",
-    "\n",
-    "# ------------------------------------------------------------\n",
-    "# Results table\n",
-    "# ------------------------------------------------------------\n",
-    "labels = {\n",
-    "    \"inflation_lag1\": \"Past inflation\",\n",
-    "    \"inflation_energy\": \"Energy inflation\",\n",
-    "    \"ulc_yoy\": \"Unit labour cost growth\",\n",
-    "    \"d_profit_share\": \"Change in profit share\",\n",
-    "    \"gdp_yoy\": \"Real GDP growth\"\n",
-    "}\n",
-    "\n",
-    "economic_reading = {\n",
-    "    \"inflation_lag1\": \"Inflation persistence\",\n",
-    "    \"inflation_energy\": \"External cost shock\",\n",
-    "    \"ulc_yoy\": \"Domestic production-cost pressure\",\n",
-    "    \"d_profit_share\": \"Distributional channel tested\",\n",
-    "    \"gdp_yoy\": \"Business-cycle conditions\"\n",
-    "}\n",
-    "\n",
-    "def stars(p):\n",
-    "    if p < 0.01:\n",
-    "        return \"***\"\n",
-    "    elif p < 0.05:\n",
-    "        return \"**\"\n",
-    "    elif p < 0.10:\n",
-    "        return \"*\"\n",
-    "    else:\n",
-    "        return \"n.s.\"\n",
-    "\n",
-    "results = []\n",
-    "\n",
-    "for var in labels.keys():\n",
-    "    results.append({\n",
-    "        \"Variable\": labels[var],\n",
-    "        \"Coefficient\": round(model.params[var], 3),\n",
-    "        \"p-value\": round(model.pvalues[var], 3),\n",
-    "        \"Significance\": stars(model.pvalues[var]),\n",
-    "        \"Economic reading\": economic_reading[var]\n",
-    "    })\n",
-    "\n",
-    "results_table = pd.DataFrame(results)\n",
-    "\n",
-    "# ------------------------------------------------------------\n",
-    "# Figures\n",
-    "# ------------------------------------------------------------\n",
-    "fig_line = go.Figure()\n",
-    "\n",
-    "fig_line.add_trace(go.Scatter(\n",
-    "    x=model_data[\"date\"],\n",
-    "    y=model_data[\"inflation_total\"],\n",
-    "    mode=\"lines\",\n",
-    "    name=\"Actual inflation\",\n",
-    "    line=dict(color=DARK, width=3)\n",
-    "))\n",
-    "\n",
-    "fig_line.add_trace(go.Scatter(\n",
-    "    x=model_data[\"date\"],\n",
-    "    y=model_data[\"fitted\"],\n",
-    "    mode=\"lines\",\n",
-    "    name=\"Fitted inflation\",\n",
-    "    line=dict(color=GREEN, width=3, dash=\"dash\")\n",
-    "))\n",
-    "\n",
-    "fig_line.update_layout(\n",
-    "    title=\"Actual and fitted inflation — Spain\",\n",
-    "    paper_bgcolor=CREAM,\n",
-    "    plot_bgcolor=CREAM,\n",
-    "    font=dict(color=DARK, family=\"Poppins, Arial\"),\n",
-    "    margin=dict(l=40, r=30, t=60, b=40),\n",
-    "    legend=dict(orientation=\"h\", y=-0.2),\n",
-    "    xaxis_title=\"\",\n",
-    "    yaxis_title=\"Inflation rate (%)\"\n",
-    ")\n",
-    "\n",
-    "coef = model.params.drop(\"const\").rename(index=labels)\n",
-    "pvalues = model.pvalues.drop(\"const\")\n",
-    "\n",
-    "coef_colors = [\n",
-    "    GREEN if pvalues[var] < 0.10 else BEIGE\n",
-    "    for var in model.params.drop(\"const\").index\n",
-    "]\n",
-    "\n",
-    "fig_coef = go.Figure(go.Bar(\n",
-    "    x=coef.values,\n",
-    "    y=coef.index,\n",
-    "    orientation=\"h\",\n",
-    "    marker_color=coef_colors\n",
-    "))\n",
-    "\n",
-    "fig_coef.update_layout(\n",
-    "    title=\"Which variables are most clearly associated with inflation?\",\n",
-    "    paper_bgcolor=CREAM,\n",
-    "    plot_bgcolor=CREAM,\n",
-    "    font=dict(color=DARK, family=\"Poppins, Arial\"),\n",
-    "    margin=dict(l=160, r=30, t=60, b=40),\n",
-    "    xaxis_title=\"Estimated coefficient\",\n",
-    "    yaxis_title=\"\"\n",
-    ")\n",
-    "\n",
-    "# ------------------------------------------------------------\n",
-    "# App\n",
-    "# ------------------------------------------------------------\n",
-    "app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])\n",
-    "\n",
-    "app.layout = html.Div(\n",
-    "    style={\n",
-    "        \"backgroundColor\": CREAM,\n",
-    "        \"minHeight\": \"100vh\",\n",
-    "        \"padding\": \"34px\",\n",
-    "        \"fontFamily\": \"Poppins, Arial\",\n",
-    "        \"color\": DARK\n",
-    "    },\n",
-    "    children=[\n",
-    "\n",
-    "        html.Div([\n",
-    "            html.H1(\n",
-    "                \"Inflation Drivers Monitor — Spain\",\n",
-    "                style={\"fontSize\": \"36px\", \"fontWeight\": \"700\", \"marginBottom\": \"4px\"}\n",
-    "            ),\n",
-    "            html.P(\n",
-    "                \"A pedagogical dashboard based on the preferred augmented Phillips Curve\",\n",
-    "                style={\"fontSize\": \"17px\", \"color\": GREEN, \"marginTop\": \"0\"}\n",
-    "            )\n",
-    "        ]),\n",
-    "\n",
-    "        html.Div([\n",
-    "            html.Div([\n",
-    "                html.H4(\"Main message\", style={\"fontWeight\": \"700\"}),\n",
-    "                html.P(\n",
-    "                    \"Spanish inflation appears to be mainly linked to past inflation, energy prices, labour costs and \"\n",
-    "                    \"economic activity. By contrast, the profit-share effect is positive but not strong enough \"\n",
-    "                    \"to provide clear evidence of an independent role.\"\n",
-    "                )\n",
-    "            ], style={\n",
-    "                \"backgroundColor\": BEIGE,\n",
-    "                \"padding\": \"22px\",\n",
-    "                \"borderRadius\": \"22px\",\n",
-    "                \"width\": \"100%\",\n",
-    "                \"marginBottom\": \"25px\"\n",
-    "            })\n",
-    "        ]),\n",
-    "\n",
-    "        dbc.Tabs([\n",
-    "\n",
-    "            dbc.Tab(label=\"1. Model fit\", children=[\n",
-    "                html.Div([\n",
-    "                    dcc.Graph(figure=fig_line)\n",
-    "                ], style={\"paddingTop\": \"25px\"})\n",
-    "            ]),\n",
-    "\n",
-    "            dbc.Tab(label=\"2. Economic drivers\", children=[\n",
-    "                html.Div([\n",
-    "                    dcc.Graph(figure=fig_coef)\n",
-    "                ], style={\"paddingTop\": \"25px\"})\n",
-    "            ]),\n",
-    "\n",
-    "            dbc.Tab(label=\"3. Interactive results table\", children=[\n",
-    "                html.Div([\n",
-    "                    html.H3(\"From econometric results to economic interpretation\",\n",
-    "                            style={\"marginTop\": \"25px\", \"fontWeight\": \"700\"}),\n",
-    "\n",
-    "                    dash_table.DataTable(\n",
-    "                        data=results_table.to_dict(\"records\"),\n",
-    "                        columns=[{\"name\": i, \"id\": i} for i in results_table.columns],\n",
-    "                        sort_action=\"native\",\n",
-    "                        filter_action=\"native\",\n",
-    "                        style_table={\"overflowX\": \"auto\"},\n",
-    "                        style_header={\n",
-    "                            \"backgroundColor\": GREEN,\n",
-    "                            \"color\": \"white\",\n",
-    "                            \"fontWeight\": \"bold\",\n",
-    "                            \"border\": \"none\"\n",
-    "                        },\n",
-    "                        style_cell={\n",
-    "                            \"backgroundColor\": LIGHT,\n",
-    "                            \"color\": DARK,\n",
-    "                            \"padding\": \"12px\",\n",
-    "                            \"fontFamily\": \"Poppins, Arial\",\n",
-    "                            \"fontSize\": \"14px\",\n",
-    "                            \"border\": f\"1px solid {BEIGE}\",\n",
-    "                            \"textAlign\": \"left\"\n",
-    "                        },\n",
-    "                        style_data_conditional=[\n",
-    "                            {\n",
-    "                                \"if\": {\"filter_query\": \"{Significance} = 'n.s.'\"},\n",
-    "                                \"backgroundColor\": \"#F1E8DC\",\n",
-    "                                \"color\": DARK\n",
-    "                            },\n",
-    "                            {\n",
-    "                                \"if\": {\"filter_query\": \"{Significance} contains '*'\"},\n",
-    "                                \"backgroundColor\": \"#EEF3EA\",\n",
-    "                                \"color\": DARK\n",
-    "                            }\n",
-    "                        ]\n",
-    "                    )\n",
-    "                ], style={\"paddingTop\": \"10px\"})\n",
-    "            ]),\n",
-    "\n",
-    "            dbc.Tab(label=\"4. Coefficient-based interpretation tool\", children=[\n",
-    "                html.Div([\n",
-    "                    html.H3(\"Coefficient-based interpretation tool\",\n",
-    "                            style={\"marginTop\": \"25px\", \"fontWeight\": \"700\"}),\n",
-    "\n",
-    "                    html.P(\n",
-    "                        \"This tool does not produce a forecast. It only shows how predicted inflation \"\n",
-    "                        \"changes mechanically when one driver changes, using the estimated coefficients.\"\n",
-    "                    ),\n",
-    "\n",
-    "                    html.Div([\n",
-    "                        html.Label(\"Energy inflation shock\"),\n",
-    "                        dcc.Slider(\n",
-    "                            id=\"energy-slider\",\n",
-    "                            min=-10,\n",
-    "                            max=20,\n",
-    "                            step=1,\n",
-    "                            value=5,\n",
-    "                            marks={-10: \"-10\", 0: \"0\", 10: \"10\", 20: \"20\"}\n",
-    "                        ),\n",
-    "\n",
-    "                        html.Br(),\n",
-    "\n",
-    "                        html.Label(\"Unit labour cost growth shock\"),\n",
-    "                        dcc.Slider(\n",
-    "                            id=\"ulc-slider\",\n",
-    "                            min=-5,\n",
-    "                            max=10,\n",
-    "                            step=1,\n",
-    "                            value=2,\n",
-    "                            marks={-5: \"-5\", 0: \"0\", 5: \"5\", 10: \"10\"}\n",
-    "                        ),\n",
-    "\n",
-    "                        html.Br(),\n",
-    "\n",
-    "                        html.Label(\"Profit-share change shock\"),\n",
-    "                        dcc.Slider(\n",
-    "                            id=\"profit-slider\",\n",
-    "                            min=-5,\n",
-    "                            max=5,\n",
-    "                            step=0.5,\n",
-    "                            value=1,\n",
-    "                            marks={-5: \"-5\", 0: \"0\", 5: \"5\"}\n",
-    "                        ),\n",
-    "\n",
-    "                        html.Br(),\n",
-    "\n",
-    "                        html.Label(\"Real GDP growth shock\"),\n",
-    "                        dcc.Slider(\n",
-    "                            id=\"gdp-slider\",\n",
-    "                            min=-10,\n",
-    "                            max=10,\n",
-    "                            step=1,\n",
-    "                            value=2,\n",
-    "                            marks={-10: \"-10\", 0: \"0\", 10: \"10\"}\n",
-    "                        ),\n",
-    "                    ], style={\n",
-    "                        \"backgroundColor\": LIGHT,\n",
-    "                        \"padding\": \"25px\",\n",
-    "                        \"borderRadius\": \"22px\",\n",
-    "                        \"marginBottom\": \"25px\"\n",
-    "                    }),\n",
-    "\n",
-    "                    html.Div(id=\"scenario-output\")\n",
-    "                ])\n",
-    "            ])\n",
-    "        ])\n",
-    "    ]\n",
-    ")\n",
-    "\n",
-    "# ------------------------------------------------------------\n",
-    "# Scenario callback\n",
-    "# ------------------------------------------------------------\n",
-    "@app.callback(\n",
-    "    Output(\"scenario-output\", \"children\"),\n",
-    "    Input(\"energy-slider\", \"value\"),\n",
-    "    Input(\"ulc-slider\", \"value\"),\n",
-    "    Input(\"profit-slider\", \"value\"),\n",
-    "    Input(\"gdp-slider\", \"value\")\n",
-    ")\n",
-    "def update_scenario(energy, ulc, profit, gdp):\n",
-    "\n",
-    "    simulated_change = (\n",
-    "        model.params[\"inflation_energy\"] * energy\n",
-    "        + model.params[\"ulc_yoy\"] * ulc\n",
-    "        + model.params[\"d_profit_share\"] * profit\n",
-    "        + model.params[\"gdp_yoy\"] * gdp\n",
-    "    )\n",
-    "\n",
-    "    return html.Div([\n",
-    "        html.H4(\"Estimated mechanical effect\",\n",
-    "                style={\"fontWeight\": \"700\", \"color\": GREEN}),\n",
-    "\n",
-    "        html.P(\n",
-    "            f\"According to the estimated model, this scenario is associated with \"\n",
-    "            f\"an approximate change of {simulated_change:.2f} percentage points \"\n",
-    "            f\"in predicted inflation.\"\n",
-    "        ),\n",
-    "\n",
-    "        html.P(\n",
-    "            \"Interpretation: this is a model-based association, not a causal forecast.\",\n",
-    "            style={\"fontStyle\": \"italic\"}\n",
-    "        )\n",
-    "    ], style={\n",
-    "        \"backgroundColor\": BEIGE,\n",
-    "        \"padding\": \"25px\",\n",
-    "        \"borderRadius\": \"22px\"\n",
-    "    })\n",
-    "\n",
-    "\n",
-    "app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])\n",
-    "server = app.server\n",
-    "\n",
-    "\n",
-    "if __name__ == \"__main__\":\n",
-    "    app.run_server(debug=True)"
-   ]
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "dash-env",
-   "language": "python",
-   "name": "python3"
-  },
-  "language_info": {
-   "codemirror_mode": {
-    "name": "ipython",
-    "version": 3
-   },
-   "file_extension": ".py",
-   "mimetype": "text/x-python",
-   "name": "python",
-   "nbconvert_exporter": "python",
-   "pygments_lexer": "ipython3",
-   "version": "3.9.25"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
+
+import pandas as pd
+import statsmodels.api as sm
+import plotly.graph_objects as go
+import os 
+
+from dash import Dash, html, dcc, dash_table, Input, Output
+import dash_bootstrap_components as dbc
+
+# ------------------------------------------------------------
+# Style
+# ------------------------------------------------------------
+CREAM = "#F6F1E8"
+GREEN = "#95AD88"
+DARK = "#2B2B2B"
+BEIGE = "#E8DDCF"
+LIGHT = "#FBF8F1"
+
+# ------------------------------------------------------------
+# Load data
+# ------------------------------------------------------------
+df = pd.read_csv("base_definitive_es_fr.csv")
+df.columns = df.columns.str.strip()
+
+# Create date variable
+if "date" in df.columns:
+    df["date"] = pd.to_datetime(df["date"])
+elif {"year", "quarter"}.issubset(df.columns):
+    df["quarter"] = df["quarter"].astype(str).str.replace("Q", "", regex=False).astype(int)
+    df["date"] = pd.PeriodIndex(
+        year=df["year"].astype(int),
+        quarter=df["quarter"],
+        freq="Q"
+    ).to_timestamp()
+elif "period" in df.columns:
+    df["date"] = pd.PeriodIndex(df["period"].astype(str), freq="Q").to_timestamp()
+elif "TIME_PERIOD" in df.columns:
+    df["date"] = pd.PeriodIndex(df["TIME_PERIOD"].astype(str), freq="Q").to_timestamp()
+else:
+    raise ValueError("No date variable found. Please check your column names.")
+
+# Identify country column
+if "country" in df.columns:
+    country_col = "country"
+elif "geo" in df.columns:
+    country_col = "geo"
+elif "country_code" in df.columns:
+    country_col = "country_code"
+else:
+    raise ValueError("No country column found.")
+
+spain = df[df[country_col].isin(["ES", "Spain"])].copy()
+spain = spain.sort_values("date")
+
+# ------------------------------------------------------------
+# Model variables
+# ------------------------------------------------------------
+spain["inflation_lag1"] = spain["inflation_total"].shift(1)
+spain["d_profit_share"] = spain["profit_share"].diff()
+
+model_data = spain.dropna(subset=[
+    "inflation_total",
+    "inflation_lag1",
+    "inflation_energy",
+    "ulc_yoy",
+    "d_profit_share",
+    "gdp_yoy"
+]).copy()
+
+X = model_data[[
+    "inflation_lag1",
+    "inflation_energy",
+    "ulc_yoy",
+    "d_profit_share",
+    "gdp_yoy"
+]]
+
+X = sm.add_constant(X)
+y = model_data["inflation_total"]
+
+model = sm.OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": 4})
+model_data["fitted"] = model.fittedvalues
+
+# ------------------------------------------------------------
+# Results table
+# ------------------------------------------------------------
+labels = {
+    "inflation_lag1": "Past inflation",
+    "inflation_energy": "Energy inflation",
+    "ulc_yoy": "Unit labour cost growth",
+    "d_profit_share": "Change in profit share",
+    "gdp_yoy": "Real GDP growth"
 }
+
+economic_reading = {
+    "inflation_lag1": "Inflation persistence",
+    "inflation_energy": "External cost shock",
+    "ulc_yoy": "Domestic production-cost pressure",
+    "d_profit_share": "Distributional channel tested",
+    "gdp_yoy": "Business-cycle conditions"
+}
+
+def stars(p):
+    if p < 0.01:
+        return "***"
+    elif p < 0.05:
+        return "**"
+    elif p < 0.10:
+        return "*"
+    else:
+        return "n.s."
+
+results = []
+
+for var in labels.keys():
+    results.append({
+        "Variable": labels[var],
+        "Coefficient": round(model.params[var], 3),
+        "p-value": round(model.pvalues[var], 3),
+        "Significance": stars(model.pvalues[var]),
+        "Economic reading": economic_reading[var]
+    })
+
+results_table = pd.DataFrame(results)
+
+# ------------------------------------------------------------
+# Figures
+# ------------------------------------------------------------
+fig_line = go.Figure()
+
+fig_line.add_trace(go.Scatter(
+    x=model_data["date"],
+    y=model_data["inflation_total"],
+    mode="lines",
+    name="Actual inflation",
+    line=dict(color=DARK, width=3)
+))
+
+fig_line.add_trace(go.Scatter(
+    x=model_data["date"],
+    y=model_data["fitted"],
+    mode="lines",
+    name="Fitted inflation",
+    line=dict(color=GREEN, width=3, dash="dash")
+))
+
+fig_line.update_layout(
+    title="Actual and fitted inflation — Spain",
+    paper_bgcolor=CREAM,
+    plot_bgcolor=CREAM,
+    font=dict(color=DARK, family="Poppins, Arial"),
+    margin=dict(l=40, r=30, t=60, b=40),
+    legend=dict(orientation="h", y=-0.2),
+    xaxis_title="",
+    yaxis_title="Inflation rate (%)"
+)
+
+coef = model.params.drop("const").rename(index=labels)
+pvalues = model.pvalues.drop("const")
+
+coef_colors = [
+    GREEN if pvalues[var] < 0.10 else BEIGE
+    for var in model.params.drop("const").index
+]
+
+fig_coef = go.Figure(go.Bar(
+    x=coef.values,
+    y=coef.index,
+    orientation="h",
+    marker_color=coef_colors
+))
+
+fig_coef.update_layout(
+    title="Which variables are most clearly associated with inflation?",
+    paper_bgcolor=CREAM,
+    plot_bgcolor=CREAM,
+    font=dict(color=DARK, family="Poppins, Arial"),
+    margin=dict(l=160, r=30, t=60, b=40),
+    xaxis_title="Estimated coefficient",
+    yaxis_title=""
+)
+
+# ------------------------------------------------------------
+# App
+# ------------------------------------------------------------
+app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+app.layout = html.Div(
+    style={
+        "backgroundColor": CREAM,
+        "minHeight": "100vh",
+        "padding": "34px",
+        "fontFamily": "Poppins, Arial",
+        "color": DARK
+    },
+    children=[
+
+        html.Div([
+            html.H1(
+                "Inflation Drivers Monitor — Spain",
+                style={"fontSize": "36px", "fontWeight": "700", "marginBottom": "4px"}
+            ),
+            html.P(
+                "A pedagogical dashboard based on the preferred augmented Phillips Curve",
+                style={"fontSize": "17px", "color": GREEN, "marginTop": "0"}
+            )
+        ]),
+
+        html.Div([
+            html.Div([
+                html.H4("Main message", style={"fontWeight": "700"}),
+                html.P(
+                    "Spanish inflation appears to be mainly linked to past inflation, energy prices, labour costs and "
+                    "economic activity. By contrast, the profit-share effect is positive but not strong enough "
+                    "to provide clear evidence of an independent role."
+                )
+            ], style={
+                "backgroundColor": BEIGE,
+                "padding": "22px",
+                "borderRadius": "22px",
+                "width": "100%",
+                "marginBottom": "25px"
+            })
+        ]),
+
+        dbc.Tabs([
+
+            dbc.Tab(label="1. Model fit", children=[
+                html.Div([
+                    dcc.Graph(figure=fig_line)
+                ], style={"paddingTop": "25px"})
+            ]),
+
+            dbc.Tab(label="2. Economic drivers", children=[
+                html.Div([
+                    dcc.Graph(figure=fig_coef)
+                ], style={"paddingTop": "25px"})
+            ]),
+
+            dbc.Tab(label="3. Interactive results table", children=[
+                html.Div([
+                    html.H3("From econometric results to economic interpretation",
+                            style={"marginTop": "25px", "fontWeight": "700"}),
+
+                    dash_table.DataTable(
+                        data=results_table.to_dict("records"),
+                        columns=[{"name": i, "id": i} for i in results_table.columns],
+                        sort_action="native",
+                        filter_action="native",
+                        style_table={"overflowX": "auto"},
+                        style_header={
+                            "backgroundColor": GREEN,
+                            "color": "white",
+                            "fontWeight": "bold",
+                            "border": "none"
+                        },
+                        style_cell={
+                            "backgroundColor": LIGHT,
+                            "color": DARK,
+                            "padding": "12px",
+                            "fontFamily": "Poppins, Arial",
+                            "fontSize": "14px",
+                            "border": f"1px solid {BEIGE}",
+                            "textAlign": "left"
+                        },
+                        style_data_conditional=[
+                            {
+                                "if": {"filter_query": "{Significance} = 'n.s.'"},
+                                "backgroundColor": "#F1E8DC",
+                                "color": DARK
+                            },
+                            {
+                                "if": {"filter_query": "{Significance} contains '*'"},
+                                "backgroundColor": "#EEF3EA",
+                                "color": DARK
+                            }
+                        ]
+                    )
+                ], style={"paddingTop": "10px"})
+            ]),
+
+            dbc.Tab(label="4. Coefficient-based interpretation tool", children=[
+                html.Div([
+                    html.H3("Coefficient-based interpretation tool",
+                            style={"marginTop": "25px", "fontWeight": "700"}),
+
+                    html.P(
+                        "This tool does not produce a forecast. It only shows how predicted inflation "
+                        "changes mechanically when one driver changes, using the estimated coefficients."
+                    ),
+
+                    html.Div([
+                        html.Label("Energy inflation shock"),
+                        dcc.Slider(
+                            id="energy-slider",
+                            min=-10,
+                            max=20,
+                            step=1,
+                            value=5,
+                            marks={-10: "-10", 0: "0", 10: "10", 20: "20"}
+                        ),
+
+                        html.Br(),
+
+                        html.Label("Unit labour cost growth shock"),
+                        dcc.Slider(
+                            id="ulc-slider",
+                            min=-5,
+                            max=10,
+                            step=1,
+                            value=2,
+                            marks={-5: "-5", 0: "0", 5: "5", 10: "10"}
+                        ),
+
+                        html.Br(),
+
+                        html.Label("Profit-share change shock"),
+                        dcc.Slider(
+                            id="profit-slider",
+                            min=-5,
+                            max=5,
+                            step=0.5,
+                            value=1,
+                            marks={-5: "-5", 0: "0", 5: "5"}
+                        ),
+
+                        html.Br(),
+
+                        html.Label("Real GDP growth shock"),
+                        dcc.Slider(
+                            id="gdp-slider",
+                            min=-10,
+                            max=10,
+                            step=1,
+                            value=2,
+                            marks={-10: "-10", 0: "0", 10: "10"}
+                        ),
+                    ], style={
+                        "backgroundColor": LIGHT,
+                        "padding": "25px",
+                        "borderRadius": "22px",
+                        "marginBottom": "25px"
+                    }),
+
+                    html.Div(id="scenario-output")
+                ])
+            ])
+        ])
+    ]
+)
+
+# ------------------------------------------------------------
+# Scenario callback
+# ------------------------------------------------------------
+@app.callback(
+    Output("scenario-output", "children"),
+    Input("energy-slider", "value"),
+    Input("ulc-slider", "value"),
+    Input("profit-slider", "value"),
+    Input("gdp-slider", "value")
+)
+def update_scenario(energy, ulc, profit, gdp):
+
+    simulated_change = (
+        model.params["inflation_energy"] * energy
+        + model.params["ulc_yoy"] * ulc
+        + model.params["d_profit_share"] * profit
+        + model.params["gdp_yoy"] * gdp
+    )
+
+    return html.Div([
+        html.H4("Estimated mechanical effect",
+                style={"fontWeight": "700", "color": GREEN}),
+
+        html.P(
+            f"According to the estimated model, this scenario is associated with "
+            f"an approximate change of {simulated_change:.2f} percentage points "
+            f"in predicted inflation."
+        ),
+
+        html.P(
+            "Interpretation: this is a model-based association, not a causal forecast.",
+            style={"fontStyle": "italic"}
+        )
+    ], style={
+        "backgroundColor": BEIGE,
+        "padding": "25px",
+        "borderRadius": "22px"
+    })
+
+
+app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+server = app.server
+
+if __name__ == "__main__":
+    app.run_server(debug=True)
