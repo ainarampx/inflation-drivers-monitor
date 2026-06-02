@@ -197,6 +197,7 @@ fig_coef.update_layout(
 # App
 # ------------------------------------------------------------
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+server = app.server
 
 app.layout = html.Div(
     style={
@@ -402,8 +403,6 @@ def update_scenario(energy, ulc, profit, gdp):
     })
 
 
-app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-server = app.server
 
 if __name__ == "__main__":
     app.run(debug=True)
