@@ -1,6 +1,6 @@
 dash
 dash-bootstrap-components
-pandas
+pandas==2.2.2
 plotly
 statsmodels
 gunicorn
